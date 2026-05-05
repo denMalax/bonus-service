@@ -32,4 +32,8 @@ public class BonusCard {
     @LastModifiedDate
     @Column(name = "updated_at")
     private LocalDateTime updatedAt;
+
+    @Version // Для оптимистичной блокировки
+    @Column(name = "version")
+    private Long version = 0L;
 }

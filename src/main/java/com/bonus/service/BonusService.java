@@ -10,6 +10,7 @@ import com.bonus.repository.BonusCardRepository;
 import com.bonus.repository.TransactionHistoryRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.dao.OptimisticLockingFailureException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -29,81 +30,135 @@ public class BonusService {
 
     // 1) Начисление бонусов
     public TransactionResponse earnBonuses(EarnRequest request) {
-        BonusCard card = getOrCreateCard(request.getCardNumber());
-        BigDecimal balanceBefore = card.getBalance();
-        BigDecimal balanceAfter = balanceBefore.add(request.getAmount());
+        try {
+            BonusCard card = getOrCreateCard(request.getCardNumber());
+            BigDecimal balanceBefore = card.getBalance();
+            BigDecimal balanceAfter = balanceBefore.add(request.getAmount());
 
-        card.setBalance(balanceAfter);
-        card.setUpdatedAt(LocalDateTime.now());
-        bonusCardRepository.save(card);
+            card.setBalance(balanceAfter);
+            card.setUpdatedAt(LocalDateTime.now());
+            bonusCardRepository.save(card);
 
-        TransactionHistory history = createHistory(card.getCardNumber(),
-                OperationType.EARN, request.getAmount(), balanceBefore, balanceAfter, request.getOrderId());
-        historyRepository.save(history);
+            TransactionHistory history = createHistory(
+                    card.getCardNumber(),
+                    OperationType.EARN,
+                    request.getAmount(),
+                    balanceBefore,
+                    balanceAfter,
+                    request.getOrderId(),
+                    request.getDescription()
+            );
+            historyRepository.save(history);
 
-        log.info("Начислено {} бонусов на карту {}", request.getAmount(), request.getCardNumber());
-        return mapToResponse(history);
+            log.info("Начислено {} бонусов на карту {}", request.getAmount(), request.getCardNumber());
+            return mapToResponse(history);
+
+        } catch (OptimisticLockingFailureException e) {
+            log.warn("Optimistic lock exception, retrying earn operation...");
+            return earnBonuses(request); // Ретрай
+        }
     }
 
     // 2) Списание бонусов
     public TransactionResponse burnBonuses(BurnRequest request) {
-        BonusCard card = bonusCardRepository.findByCardNumber(request.getCardNumber())
-                .orElseThrow(() -> new NotFoundException("Карта не найдена"));
+        try {
+            BonusCard card = bonusCardRepository.findByCardNumber(request.getCardNumber())
+                    .orElseThrow(() -> new NotFoundException("Карта", request.getCardNumber()));
 
-        if (card.getBalance().compareTo(request.getAmount()) < 0) {
-            throw new InsufficientBalanceException("Недостаточно бонусов");
+            if (card.getBalance().compareTo(request.getAmount()) < 0) {
+                throw new InsufficientBalanceException(
+                        request.getCardNumber(),
+                        request.getAmount(),
+                        card.getBalance()
+                );
+            }
+
+            BigDecimal balanceBefore = card.getBalance();
+            BigDecimal balanceAfter = balanceBefore.subtract(request.getAmount());
+
+            card.setBalance(balanceAfter);
+            card.setUpdatedAt(LocalDateTime.now());
+            bonusCardRepository.save(card);
+
+            TransactionHistory history = createHistory(
+                    card.getCardNumber(),
+                    OperationType.BURN,
+                    request.getAmount(),
+                    balanceBefore,
+                    balanceAfter,
+                    request.getOrderId(),
+                    request.getDescription()
+            );
+            historyRepository.save(history);
+
+            log.info("Списано {} бонусов с карты {}", request.getAmount(), request.getCardNumber());
+            return mapToResponse(history);
+
+        } catch (OptimisticLockingFailureException e) {
+            log.warn("Optimistic lock exception, retrying burn operation...");
+            return burnBonuses(request);
         }
-
-        BigDecimal balanceBefore = card.getBalance();
-        BigDecimal balanceAfter = balanceBefore.subtract(request.getAmount());
-
-        card.setBalance(balanceAfter);
-        card.setUpdatedAt(LocalDateTime.now());
-        bonusCardRepository.save(card);
-
-        TransactionHistory history = createHistory(card.getCardNumber(),
-                OperationType.BURN, request.getAmount(), balanceBefore, balanceAfter, request.getOrderId());
-        historyRepository.save(history);
-
-        log.info("Списано {} бонусов с карты {}", request.getAmount(), request.getCardNumber());
-        return mapToResponse(history);
     }
 
     // 3) Возврат бонусов
     public TransactionResponse refundBonuses(RefundRequest request) {
-        // Находим исходную операцию по referenceId
-        TransactionHistory originalTx = historyRepository.findByReferenceId(request.getOriginalTransactionId())
-                .orElseThrow(() -> new NotFoundException("Исходная операция не найдена"));
+        try {
+            // Находим исходную операцию по referenceId
+            TransactionHistory originalTx = historyRepository.findByReferenceId(request.getOriginalTransactionId())
+                    .orElseThrow(() -> new NotFoundException("Транзакция", request.getOriginalTransactionId()));
 
-        BonusCard card = bonusCardRepository.findByCardNumber(originalTx.getCardNumber())
-                .orElseThrow(() -> new NotFoundException("Карта не найдена"));
+            BonusCard card = bonusCardRepository.findByCardNumber(originalTx.getCardNumber())
+                    .orElseThrow(() -> new NotFoundException("Карта", originalTx.getCardNumber()));
 
-        BigDecimal balanceBefore = card.getBalance();
-        BigDecimal balanceAfter;
-        OperationType refundType;
+            BigDecimal balanceBefore = card.getBalance();
+            BigDecimal balanceAfter;
+            OperationType refundType;
+            String description;
 
-        if (originalTx.getOperationType() == OperationType.EARN) {
-            // Возврат начисленных - списываем обратно
-            refundType = OperationType.REFUND_EARN;
-            balanceAfter = balanceBefore.subtract(originalTx.getAmount());
-        } else if (originalTx.getOperationType() == OperationType.BURN) {
-            // Возврат списанных - возвращаем на баланс
-            refundType = OperationType.REFUND_BURN;
-            balanceAfter = balanceBefore.add(originalTx.getAmount());
-        } else {
-            throw new IllegalArgumentException("Невозможно сделать возврат для данного типа операции");
+            if (originalTx.getOperationType() == OperationType.EARN) {
+                // Возврат начисленных - списываем обратно
+                refundType = OperationType.REFUND_EARN;
+                balanceAfter = balanceBefore.subtract(originalTx.getAmount());
+                description = "Возврат начисленных бонусов по операции " + request.getOriginalTransactionId();
+
+                if (balanceBefore.compareTo(originalTx.getAmount()) < 0) {
+                    throw new InsufficientBalanceException(
+                            card.getCardNumber(),
+                            originalTx.getAmount(),
+                            balanceBefore
+                    );
+                }
+            } else if (originalTx.getOperationType() == OperationType.BURN) {
+                // Возврат списанных - возвращаем на баланс
+                refundType = OperationType.REFUND_BURN;
+                balanceAfter = balanceBefore.add(originalTx.getAmount());
+                description = "Возврат списанных бонусов по операции " + request.getOriginalTransactionId();
+            } else {
+                throw new IllegalArgumentException("Невозможно сделать возврат для операции типа: " + originalTx.getOperationType());
+            }
+
+            card.setBalance(balanceAfter);
+            card.setUpdatedAt(LocalDateTime.now());
+            bonusCardRepository.save(card);
+
+            TransactionHistory history = createHistory(
+                    card.getCardNumber(),
+                    refundType,
+                    originalTx.getAmount(),
+                    balanceBefore,
+                    balanceAfter,
+                    request.getOriginalTransactionId(),
+                    description
+            );
+            historyRepository.save(history);
+
+            log.info("Выполнен возврат по операции {}", request.getOriginalTransactionId());
+            return mapToResponse(history);
+
+        } catch (OptimisticLockingFailureException e) {
+            log.warn("Optimistic lock exception, retrying refund operation...");
+            return refundBonuses(request);
         }
-
-        card.setBalance(balanceAfter);
-        card.setUpdatedAt(LocalDateTime.now());
-        bonusCardRepository.save(card);
-
-        TransactionHistory history = createHistory(card.getCardNumber(),
-                refundType, originalTx.getAmount(), balanceBefore, balanceAfter, request.getOriginalTransactionId());
-        historyRepository.save(history);
-
-        log.info("Выполнен возврат по операции {}", request.getOriginalTransactionId());
-        return mapToResponse(history);
     }
 
     // 4) Получить баланс
@@ -125,18 +180,11 @@ public class BonusService {
 
     private BonusCard getOrCreateCard(String cardNumber) {
         return bonusCardRepository.findByCardNumber(cardNumber)
-                .orElseGet(() -> {
-                    BonusCard newCard = new BonusCard();
-                    newCard.setCardNumber(cardNumber);
-                    newCard.setBalance(BigDecimal.ZERO);
-                    newCard.setCreatedAt(LocalDateTime.now());
-                    newCard.setUpdatedAt(LocalDateTime.now());
-                    return bonusCardRepository.save(newCard);
-                });
+                .orElseGet(() -> createNewCard(cardNumber));
     }
 
     private TransactionHistory createHistory(String cardNumber, OperationType type,
-                                             BigDecimal amount, BigDecimal before, BigDecimal after, String refId) {
+                                             BigDecimal amount, BigDecimal before, BigDecimal after, String refId, String description) {
         TransactionHistory history = new TransactionHistory();
         history.setCardNumber(cardNumber);
         history.setOperationType(type);
@@ -144,8 +192,24 @@ public class BonusService {
         history.setBalanceBefore(before);
         history.setBalanceAfter(after);
         history.setReferenceId(refId);
+        history.setDescription(description != null ? description : getDefaultDescription(type, amount));
         history.setCreatedAt(LocalDateTime.now());
         return history;
+    }
+
+    private String getDefaultDescription(OperationType type, BigDecimal amount) {
+        switch (type) {
+            case EARN:
+                return "Начисление бонусов: " + amount;
+            case BURN:
+                return "Списание бонусов: " + amount;
+            case REFUND_EARN:
+                return "Возврат начисленных бонусов: " + amount;
+            case REFUND_BURN:
+                return "Возврат списанных бонусов: " + amount;
+            default:
+                return "Операция с бонусами: " + amount;
+        }
     }
 
     private TransactionResponse mapToResponse(TransactionHistory history) {
@@ -159,5 +223,32 @@ public class BonusService {
                 history.getReferenceId(),
                 history.getCreatedAt()
         );
+    }
+
+    private BonusCard createNewCard(String cardNumber) {
+        log.info("Создаем новую карту с номером: {}", cardNumber);
+
+        BonusCard newCard = new BonusCard();
+        newCard.setCardNumber(cardNumber);
+        newCard.setBalance(BigDecimal.ZERO);
+        newCard.setCreatedAt(LocalDateTime.now());
+        newCard.setUpdatedAt(LocalDateTime.now());
+        // Если есть поле version, оно автоматически установится в 0
+
+        BonusCard savedCard = bonusCardRepository.save(newCard);
+
+        // Создаем приветственную транзакцию в истории
+        TransactionHistory welcomeHistory = createHistory(
+                savedCard.getCardNumber(),
+                OperationType.EARN,
+                BigDecimal.ZERO,
+                BigDecimal.ZERO,
+                BigDecimal.ZERO,
+                "CARD_CREATION",
+                "Карта создана"
+        );
+        historyRepository.save(welcomeHistory);
+
+        return savedCard;
     }
 }

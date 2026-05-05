@@ -42,6 +42,9 @@ public class TransactionHistory {
     @Column(name = "reference_id", length = 100)
     private String referenceId;
 
+    @Column(name = "description", length = 500)
+    private String description;
+
     @CreatedDate
     @Column(name = "created_at", updatable = false)
     private LocalDateTime createdAt;

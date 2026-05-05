@@ -16,11 +16,6 @@ public interface BonusCardRepository extends JpaRepository<BonusCard, Long> {
     // Поиск карты по номеру
     Optional<BonusCard> findByCardNumber(String cardNumber);
 
-    // Поиск с пессимистичной блокировкой для конкурентных операций
-    @Lock(LockModeType.PESSIMISTIC_WRITE)
-    @Query("SELECT b FROM BonusCard b WHERE b.cardNumber = :cardNumber")
-    Optional<BonusCard> findByCardNumberWithLock(@Param("cardNumber") String cardNumber);
-
     // Проверка существования карты
     boolean existsByCardNumber(String cardNumber);
 

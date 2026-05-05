@@ -16,4 +16,6 @@ public class EarnRequest {
     private BigDecimal amount;
 
     private String orderId;
+
+    private String description; // Описание операции
 }

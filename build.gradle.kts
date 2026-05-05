@@ -3,6 +3,7 @@ plugins {
     java
     id("org.springframework.boot") version "3.2.3"
     id("io.spring.dependency-management") version "1.1.4"
+    id("org.flywaydb.flyway") version "10.11.1"
 }
 
 group = "com.bonus"
@@ -23,6 +24,8 @@ dependencies {
     implementation("org.springframework.boot:spring-boot-starter-data-jpa")
     implementation("org.springframework.boot:spring-boot-starter-validation")
     implementation("org.springframework.boot:spring-boot-starter-actuator")
+
+    implementation("org.flywaydb:flyway-core")
 
     // Database
     runtimeOnly("org.postgresql:postgresql")

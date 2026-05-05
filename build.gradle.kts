@@ -27,6 +27,8 @@ dependencies {
 
     implementation("org.flywaydb:flyway-core")
 
+    implementation("org.springframework.boot:spring-boot-starter-security")
+
     // Database
     runtimeOnly("org.postgresql:postgresql")
 
